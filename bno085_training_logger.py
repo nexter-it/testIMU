@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# BNO085 Live Monitor - Stampa semplice leggibile da terminale
+# BNO085 Live Monitor - Versione semplice e leggibile con velocità stimata
 
 import time
 import sys
@@ -28,6 +28,8 @@ class BNO085MonitorSimple:
         self.sensor = None
         self.i2c = None
         self.start_time = None
+        self.last_time = None
+        self.velocity = [0.0, 0.0, 0.0]  # vx, vy, vz
 
     def initialize(self):
         """Inizializza il sensore"""
@@ -50,13 +52,24 @@ class BNO085MonitorSimple:
 
             print("Sensore pronto!\n")
             self.start_time = time.time()
+            self.last_time = self.start_time
             return True
         except Exception as e:
             print(f"Errore inizializzazione: {e}")
             return False
 
+    def estimate_velocity(self, accel):
+        """Stima velocità con integrazione semplice"""
+        now = time.time()
+        dt = now - self.last_time
+        for i in range(3):
+            self.velocity[i] += accel[i] * dt
+        self.last_time = now
+        speed = math.sqrt(sum(v**2 for v in self.velocity))
+        return self.velocity, speed
+
     def read_and_print(self):
-        """Legge e stampa dati leggibili"""
+        """Legge e stampa i dati"""
         try:
             lin = self.sensor.linear_acceleration
             gyro = self.sensor.gyro
@@ -64,13 +77,19 @@ class BNO085MonitorSimple:
             quat = self.sensor.quaternion
             roll, pitch, yaw = quaternion_to_euler(*quat)
 
+            velocity, speed = self.estimate_velocity(lin)
             elapsed = time.time() - self.start_time
 
             print(f"Tempo: {elapsed:6.1f} s")
-            print(f"  Accel (m/s²):   X={lin[0]:6.3f}  Y={lin[1]:6.3f}  Z={lin[2]:6.3f}")
-            print(f"  Gyro  (rad/s):  X={gyro[0]:6.3f}  Y={gyro[1]:6.3f}  Z={gyro[2]:6.3f}")
-            print(f"  Mag   (µT):     X={mag[0]:6.2f}  Y={mag[1]:6.2f}  Z={mag[2]:6.2f}")
-            print(f"  Yaw/Pitch/Roll: {yaw:6.2f}°  {pitch:6.2f}°  {roll:6.2f}°")
+            print(f"  Accel (m/s²):   X={lin[0]:7.3f}  Y={lin[1]:7.3f}  Z={lin[2]:7.3f}")
+            print(f"  Gyro  (rad/s):  X={gyro[0]:7.3f}  Y={gyro[1]:7.3f}  Z={gyro[2]:7.3f}")
+            print(f"  Mag   (µT):     X={mag[0]:7.2f}  Y={mag[1]:7.2f}  Z={mag[2]:7.2f}")
+            print(f"  Yaw/Pitch/Roll: {yaw:7.2f}°  {pitch:7.2f}°  {roll:7.2f}°")
+            print(f"  Velocità stimata: Vx={velocity[0]:7.3f}  Vy={velocity[1]:7.3f}  Vz={velocity[2]:7.3f}  |v|={speed:7.3f} m/s")
+            if elapsed > 5:
+                print(f"  ⚠️  Deriva in aumento (t={elapsed:.0f}s)")
+            if elapsed > 30:
+                print("  🔴 Dati velocità non più affidabili! Usa GPS.")
             print("-" * 60)
             sys.stdout.flush()
         except Exception as e:
@@ -94,7 +113,7 @@ def main():
     try:
         while True:
             mon.read_and_print()
-            time.sleep(0.5)  # aggiorna ogni mezzo secondo
+            time.sleep(0.5)  # aggiorna 2 volte al secondo
     except KeyboardInterrupt:
         print("\nTerminato.")
     finally:
