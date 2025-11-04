@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """
-BNO085 Training Data Logger
-Registra tutti i dati IMU necessari per training del modello AI
-Frequenza: 20 Hz (50ms tra campioni)
+BNO085 Live Monitor - Tutti i Dati Disponibili
+Mostra in tempo reale TUTTI i dati IMU utili per training
+Include velocità stimata (con avviso sulla deriva!)
 """
 
 import time
-import csv
 import sys
 import math
-from datetime import datetime
 from adafruit_extended_bus import ExtendedI2C
 from adafruit_bno08x.i2c import BNO08X_I2C
 from adafruit_bno08x import (
@@ -21,39 +19,35 @@ from adafruit_bno08x import (
 )
 
 
-class BNO085TrainingLogger:
-    """Logger per dati training track mapping"""
+class BNO085Monitor:
+    """Monitor completo per BNO085"""
     
-    def __init__(self, bus=3, address=0x4A, sample_rate_hz=20):
+    def __init__(self, bus=3, address=0x4A):
         self.bus = bus
         self.address = address
-        self.sample_rate_hz = sample_rate_hz
-        self.sample_interval = 1.0 / sample_rate_hz
         self.sensor = None
         self.i2c = None
         
-        # Crea nome file con timestamp
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        self.filename = f"track_training_{timestamp}.csv"
-        
-        # Contatori
-        self.sample_count = 0
+        # Variabili per calcolo velocità (ATTENZIONE: deriva!)
+        self.velocity = [0.0, 0.0, 0.0]  # [vx, vy, vz] in m/s
+        self.last_time = None
         self.start_time = None
         
+        # Contatori per statistiche
+        self.sample_count = 0
+        
     def initialize(self):
-        """Inizializza connessione I2C e sensore"""
+        """Inizializza BNO085"""
         try:
-            print(f"Connessione BNO085 su bus {self.bus}, indirizzo 0x{self.address:02X}...")
+            print(f"Connessione BNO085 su bus {self.bus}...\n")
             
-            # Crea connessione I2C software
             self.i2c = ExtendedI2C(self.bus)
             time.sleep(0.1)
             
-            # Inizializza sensore
             self.sensor = BNO08X_I2C(self.i2c, address=self.address)
             time.sleep(0.5)
             
-            # Abilita SOLO i sensori necessari per training
+            # Abilita TUTTI i sensori
             sensors = [
                 (BNO_REPORT_LINEAR_ACCELERATION, "Accelerazione Lineare"),
                 (BNO_REPORT_GYROSCOPE, "Giroscopio"),
@@ -61,7 +55,6 @@ class BNO085TrainingLogger:
                 (BNO_REPORT_ROTATION_VECTOR, "Quaternioni"),
             ]
             
-            print("Abilitazione sensori...")
             for sensor_type, name in sensors:
                 try:
                     self.sensor.enable_feature(sensor_type)
@@ -71,58 +64,47 @@ class BNO085TrainingLogger:
                     print(f"  ✗ {name}: {e}")
                     return False
             
-            print("✓ BNO085 inizializzato!\n")
+            print("\n✓ BNO085 pronto!\n")
+            self.start_time = time.time()
+            self.last_time = self.start_time
             return True
             
         except Exception as e:
-            print(f"✗ Errore inizializzazione: {e}")
+            print(f"✗ Errore: {e}")
             return False
     
-    def init_csv(self):
-        """Crea file CSV con header"""
-        with open(self.filename, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                'timestamp',      # Timestamp Unix (secondi)
-                'accel_x',       # Accelerazione lineare X (m/s²)
-                'accel_y',       # Accelerazione lineare Y (m/s²)
-                'accel_z',       # Accelerazione lineare Z (m/s²)
-                'gyro_x',        # Velocità angolare X (rad/s)
-                'gyro_y',        # Velocità angolare Y (rad/s)
-                'gyro_z',        # Velocità angolare Z (rad/s)
-                'mag_x',         # Campo magnetico X (µT)
-                'mag_y',         # Campo magnetico Y (µT)
-                'mag_z',         # Campo magnetico Z (µT)
-                'quat_i',        # Quaternione i
-                'quat_j',        # Quaternione j
-                'quat_k',        # Quaternione k
-                'quat_r',        # Quaternione real
-                'yaw',           # Angolo yaw (gradi)
-                'pitch',         # Angolo pitch (gradi)
-                'roll',          # Angolo roll (gradi)
-            ])
-        print(f"File CSV creato: {self.filename}\n")
-    
     def quaternion_to_euler(self, i, j, k, r):
-        """Converte quaternioni in angoli di Eulero (gradi)"""
-        # Roll (X-axis rotation)
+        """Converte quaternioni in Eulero (gradi)"""
         roll = math.atan2(2*(r*i + j*k), 1 - 2*(i**2 + j**2))
         
-        # Pitch (Y-axis rotation)
         sinp = 2*(r*j - k*i)
-        if abs(sinp) >= 1:
-            pitch = math.copysign(math.pi / 2, sinp)
-        else:
-            pitch = math.asin(sinp)
+        pitch = math.copysign(math.pi / 2, sinp) if abs(sinp) >= 1 else math.asin(sinp)
         
-        # Yaw (Z-axis rotation)
         yaw = math.atan2(2*(r*k + i*j), 1 - 2*(j**2 + k**2))
         
-        # Converti in gradi
         return math.degrees(roll), math.degrees(pitch), math.degrees(yaw)
     
-    def log_sample(self):
-        """Legge e salva un campione di dati"""
+    def estimate_velocity(self, lin_accel):
+        """
+        Stima velocità integrando accelerazione
+        ⚠️ ATTENZIONE: Deriva rapidamente! Solo per test!
+        """
+        current_time = time.time()
+        dt = current_time - self.last_time
+        
+        # Integrazione semplice: v = v0 + a*dt
+        for i in range(3):
+            self.velocity[i] += lin_accel[i] * dt
+        
+        self.last_time = current_time
+        
+        # Calcola magnitudine velocità
+        speed = math.sqrt(sum(v**2 for v in self.velocity))
+        
+        return self.velocity, speed
+    
+    def read_and_display(self):
+        """Legge tutti i dati e li mostra"""
         try:
             # Leggi tutti i sensori
             lin_accel = self.sensor.linear_acceleration
@@ -130,54 +112,91 @@ class BNO085TrainingLogger:
             mag = self.sensor.magnetic
             quat = self.sensor.quaternion
             
-            # Verifica che tutti i dati siano validi
-            if not all([lin_accel, gyro, mag, quat]):
-                return False
-            
-            # Calcola angoli di Eulero
+            # Calcola derivati
             roll, pitch, yaw = self.quaternion_to_euler(*quat)
+            velocity, speed = self.estimate_velocity(lin_accel)
             
-            # Timestamp
-            ts = time.time()
+            # Calcola magnitudini
+            accel_mag = math.sqrt(sum(a**2 for a in lin_accel))
+            gyro_mag = math.sqrt(sum(g**2 for g in gyro))
+            mag_mag = math.sqrt(sum(m**2 for m in mag))
             
-            # Scrivi su CSV
-            with open(self.filename, 'a', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    f"{ts:.6f}",
-                    f"{lin_accel[0]:.6f}",
-                    f"{lin_accel[1]:.6f}",
-                    f"{lin_accel[2]:.6f}",
-                    f"{gyro[0]:.6f}",
-                    f"{gyro[1]:.6f}",
-                    f"{gyro[2]:.6f}",
-                    f"{mag[0]:.6f}",
-                    f"{mag[1]:.6f}",
-                    f"{mag[2]:.6f}",
-                    f"{quat[0]:.6f}",
-                    f"{quat[1]:.6f}",
-                    f"{quat[2]:.6f}",
-                    f"{quat[3]:.6f}",
-                    f"{yaw:.6f}",
-                    f"{pitch:.6f}",
-                    f"{roll:.6f}",
-                ])
+            # Tempo trascorso
+            elapsed = time.time() - self.start_time
             
             self.sample_count += 1
+            
+            # Clear screen e stampa
+            print("\033[2J\033[H")  # Clear screen
+            print("="*80)
+            print("🏁 BNO085 LIVE MONITOR - TUTTI I DATI PER TRAINING")
+            print("="*80)
+            print(f"Tempo: {elapsed:.1f}s | Campioni: {self.sample_count} | Freq: {self.sample_count/elapsed:.1f} Hz")
+            print("="*80)
+            
+            print("\n📊 DATI GREZZI (utili per training)")
+            print("-"*80)
+            
+            # Accelerazione Lineare (senza gravità)
+            print(f"Accelerazione Lineare (m/s²):")
+            print(f"  X: {lin_accel[0]:8.4f}  Y: {lin_accel[1]:8.4f}  Z: {lin_accel[2]:8.4f}  |Mag|: {accel_mag:7.4f}")
+            print(f"  → Rileva: Accelerazioni/Frenate (Y), Curve laterali (X)")
+            
+            # Giroscopio
+            print(f"\nGiroscopio (rad/s):")
+            print(f"  X: {gyro[0]:8.4f}  Y: {gyro[1]:8.4f}  Z: {gyro[2]:8.4f}  |Mag|: {gyro_mag:7.4f}")
+            print(f"  → Rileva: Velocità di rotazione (Z importante per curve)")
+            
+            # Magnetometro
+            print(f"\nMagnetometro (µT):")
+            print(f"  X: {mag[0]:8.2f}  Y: {mag[1]:8.2f}  Z: {mag[2]:8.2f}  |Mag|: {mag_mag:7.2f}")
+            print(f"  → Rileva: Orientamento assoluto rispetto al Nord")
+            
+            # Quaternioni
+            print(f"\nQuaternioni (orientamento completo):")
+            print(f"  i: {quat[0]:7.4f}  j: {quat[1]:7.4f}  k: {quat[2]:7.4f}  r: {quat[3]:7.4f}")
+            
+            # Angoli di Eulero
+            print(f"\nAngoli di Eulero (gradi):")
+            print(f"  Roll:  {roll:7.2f}°  (inclinazione laterale)")
+            print(f"  Pitch: {pitch:7.2f}°  (inclinazione avanti/indietro)")
+            print(f"  Yaw:   {yaw:7.2f}°  (direzione/heading) ← IMPORTANTE!")
+            
+            print("\n" + "="*80)
+            print("⚠️  DATI DERIVATI (con limitazioni)")
+            print("="*80)
+            
+            # Velocità stimata (CON AVVISO!)
+            print(f"\nVelocità Stimata (integrazione accelerazione):")
+            print(f"  Vx: {velocity[0]:7.3f} m/s  Vy: {velocity[1]:7.3f} m/s  Vz: {velocity[2]:7.3f} m/s")
+            print(f"  Speed: {speed:7.3f} m/s ({speed*3.6:.1f} km/h)")
+            
+            if elapsed > 5:
+                print(f"  ⚠️  ATTENZIONE: Deriva attiva da {elapsed:.0f}s! Errore stimato: ±{elapsed*0.01:.2f} m/s")
+            if elapsed > 30:
+                print(f"  🔴 DATI INAFFIDABILI dopo 30s! Usa GPS per velocità reale!")
+            
+            # Features derivate utili
+            print(f"\n📈 Features Derivate (da calcolare post-processing):")
+            print(f"  Delta Yaw:     (calcola variazione yaw tra campioni)")
+            print(f"  Accel laterale: {lin_accel[0]:.4f} m/s² (per curve)")
+            print(f"  Accel longitud: {lin_accel[1]:.4f} m/s² (per freno/accelerazione)")
+            print(f"  Rotazione Z:    {gyro[2]:.4f} rad/s = {math.degrees(gyro[2]):.2f} °/s")
+            
+            print("\n" + "="*80)
+            print("💡 RACCOMANDAZIONI PER TRAINING:")
+            print("="*80)
+            print("  ✅ USA: accel_x, accel_y, gyro_z, yaw, mag (campo magnetico)")
+            print("  ✅ CALCOLA: delta_yaw, accel_magnitude, gyro_magnitude")
+            print("  ❌ NON USARE: velocità stimata da IMU (deriva troppo!)")
+            print("  ✅ PER VELOCITÀ: Aggiungi GPS durante training")
+            print("="*80)
+            
             return True
             
         except Exception as e:
-            print(f"\n⚠ Errore lettura: {e}")
+            print(f"\n⚠️ Errore lettura: {e}")
             return False
-    
-    def print_stats(self):
-        """Stampa statistiche correnti"""
-        if self.start_time:
-            elapsed = time.time() - self.start_time
-            rate = self.sample_count / elapsed if elapsed > 0 else 0
-            print(f"\r📊 Campioni: {self.sample_count:6d} | "
-                  f"Freq: {rate:5.1f} Hz | "
-                  f"Tempo: {elapsed:6.1f}s", end='', flush=True)
     
     def cleanup(self):
         """Chiude connessione"""
@@ -189,89 +208,32 @@ class BNO085TrainingLogger:
 
 
 def main():
-    """Main function"""
-    print("="*70)
-    print("🏁 BNO085 TRAINING DATA LOGGER")
-    print("="*70)
-    print()
+    """Main loop"""
+    monitor = BNO085Monitor(bus=3, address=0x4A)
     
-    # Inizializza logger
-    logger = BNO085TrainingLogger(bus=3, address=0x4A, sample_rate_hz=20)
-    
-    # Inizializza sensore
-    if not logger.initialize():
+    if not monitor.initialize():
         print("✗ Impossibile inizializzare il sensore")
         sys.exit(1)
     
-    # Crea file CSV
-    logger.init_csv()
-    
-    print("="*70)
-    print("📝 REGISTRAZIONE AVVIATA")
-    print("="*70)
-    print(f"File output: {logger.filename}")
-    print(f"Frequenza campionamento: {logger.sample_rate_hz} Hz")
-    print()
-    print("Istruzioni:")
-    print("  1. Porta il sensore sulla pista")
-    print("  2. Fai giri completi della pista")
-    print("  3. Premi Ctrl+C quando hai finito")
-    print()
-    print("="*70)
-    print()
-    
-    logger.start_time = time.time()
-    last_sample_time = time.time()
+    print("Premi Ctrl+C per uscire\n")
+    time.sleep(2)
     
     try:
         while True:
-            current_time = time.time()
-            
-            # Mantieni frequenza campionamento costante
-            if current_time - last_sample_time >= logger.sample_interval:
-                logger.log_sample()
-                last_sample_time = current_time
-                
-                # Stampa statistiche ogni 10 campioni
-                if logger.sample_count % 10 == 0:
-                    logger.print_stats()
-            
-            # Piccolo delay per non saturare CPU
-            time.sleep(0.001)
+            monitor.read_and_display()
+            time.sleep(0.2)  # 5 Hz refresh
             
     except KeyboardInterrupt:
-        print("\n\n" + "="*70)
-        print("✓ REGISTRAZIONE TERMINATA")
-        print("="*70)
-        
-        elapsed = time.time() - logger.start_time
-        avg_rate = logger.sample_count / elapsed if elapsed > 0 else 0
-        
-        print(f"Campioni totali:     {logger.sample_count}")
-        print(f"Tempo registrazione: {elapsed:.1f} secondi")
-        print(f"Frequenza media:     {avg_rate:.1f} Hz")
-        print(f"File salvato:        {logger.filename}")
-        print("="*70)
-        print()
-        
-        # Mostra preview dei dati
-        print("📊 Preview dati (prime 3 righe):")
-        try:
-            with open(logger.filename, 'r') as f:
-                for i, line in enumerate(f):
-                    if i < 4:  # Header + 3 righe
-                        print(f"  {line.rstrip()}")
-                    else:
-                        break
-        except:
-            pass
-        
-        print()
-        print("✅ Dati pronti per il training del modello AI!")
-        print()
-        
+        print("\n\n" + "="*80)
+        print("✓ Monitor terminato")
+        print("="*80)
+        elapsed = time.time() - monitor.start_time
+        print(f"Tempo totale: {elapsed:.1f}s")
+        print(f"Campioni: {monitor.sample_count}")
+        print(f"Frequenza media: {monitor.sample_count/elapsed:.1f} Hz")
+        print("="*80 + "\n")
     finally:
-        logger.cleanup()
+        monitor.cleanup()
 
 
 if __name__ == "__main__":
