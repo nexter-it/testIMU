@@ -31,7 +31,6 @@ class BNO085MonitorSimple:
         self.i2c = None
         self.start_time = None
         self.last_time = None
-        self.velocity = [0.0, 0.0, 0.0]  # vx, vy, vz
 
         # logging
         self.log_filename = log_filename or "bno085_data.csv"
@@ -78,8 +77,7 @@ class BNO085MonitorSimple:
                     "time_s", "ax", "ay", "az",
                     "gx", "gy", "gz",
                     "mx", "my", "mz",
-                    "yaw_deg", "pitch_deg", "roll_deg",
-                    "vx", "vy", "vz", "speed"
+                    "yaw_deg", "pitch_deg", "roll_deg"
                 ])
             print(f"📁 Log attivo su: {filename}")
         except Exception as e:
@@ -87,7 +85,7 @@ class BNO085MonitorSimple:
             self.log_file = None
             self.csv_writer = None
 
-    def log_data(self, elapsed, lin, gyro, mag, roll, pitch, yaw, velocity, speed):
+    def log_data(self, elapsed, lin, gyro, mag, roll, pitch, yaw):
         """Scrive una riga di dati nel CSV"""
         if not self.csv_writer:
             return
@@ -98,22 +96,10 @@ class BNO085MonitorSimple:
                 *[round(x, 4) for x in gyro],
                 *[round(x, 2) for x in mag],
                 round(yaw, 2), round(pitch, 2), round(roll, 2),
-                *[round(v, 4) for v in velocity],
-                round(speed, 4),
             ])
             self.log_file.flush()  # scrivi subito su disco
         except Exception as e:
             print(f"⚠️  Errore scrittura CSV: {e}")
-
-    def estimate_velocity(self, accel):
-        """Stima velocità con integrazione semplice"""
-        now = time.time()
-        dt = now - self.last_time
-        for i in range(3):
-            self.velocity[i] += accel[i] * dt
-        self.last_time = now
-        speed = math.sqrt(sum(v**2 for v in self.velocity))
-        return self.velocity, speed
 
     def read_and_print(self):
         """Legge e stampa i dati"""
@@ -124,7 +110,6 @@ class BNO085MonitorSimple:
             quat = self.sensor.quaternion
             roll, pitch, yaw = quaternion_to_euler(*quat)
 
-            velocity, speed = self.estimate_velocity(lin)
             elapsed = time.time() - self.start_time
 
             print(f"Tempo: {elapsed:6.1f} s")
@@ -132,16 +117,11 @@ class BNO085MonitorSimple:
             print(f"  Gyro  (rad/s):  X={gyro[0]:7.3f}  Y={gyro[1]:7.3f}  Z={gyro[2]:7.3f}")
             print(f"  Mag   (µT):     X={mag[0]:7.2f}  Y={mag[1]:7.2f}  Z={mag[2]:7.2f}")
             print(f"  Yaw/Pitch/Roll: {yaw:7.2f}°  {pitch:7.2f}°  {roll:7.2f}°")
-            print(f"  Velocità stimata: Vx={velocity[0]:7.3f}  Vy={velocity[1]:7.3f}  Vz={velocity[2]:7.3f}  |v|={speed:7.3f} m/s")
-            if elapsed > 5:
-                print(f"  ⚠️  Deriva in aumento (t={elapsed:.0f}s)")
-            if elapsed > 30:
-                print("  🔴 Dati velocità non più affidabili! Usa GPS.")
             print("-" * 60)
             sys.stdout.flush()
 
             # Salvataggio su file
-            self.log_data(elapsed, lin, gyro, mag, roll, pitch, yaw, velocity, speed)
+            self.log_data(elapsed, lin, gyro, mag, roll, pitch, yaw)
 
         except Exception as e:
             print(f"Errore lettura: {e}")
